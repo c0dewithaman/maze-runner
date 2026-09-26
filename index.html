@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Maze Runner</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#10131a; --panel:#161a23; --wall:#3a4258; --path:#1a1f2b;
+    --player:#57e0c9; --player-glow:rgba(87,224,201,0.35);
+    --goal:#f2b84b; --text:#e8ebf2; --muted:#8890a6;
+  }
+  *{ box-sizing:border-box; }
+  body{
+    margin:0; min-height:100vh; background:var(--bg); color:var(--text);
+    font-family:'Space Grotesk', sans-serif;
+    display:flex; align-items:center; justify-content:center; padding:24px;
+  }
+  .card{ width:100%; max-width:560px; text-align:center; }
+  h1{ font-size:1.6rem; font-weight:700; margin:0 0 4px; letter-spacing:-0.01em; }
+  .sub{ color:var(--muted); font-size:0.9rem; margin:0 0 20px; }
+  .hud{ display:flex; justify-content:center; gap:28px; margin-bottom:16px; font-size:0.95rem; }
+  .hud .val{ font-weight:600; color:var(--player); }
+  canvas{ background:var(--path); border-radius:10px; max-width:100%; touch-action:none; }
+  .canvas-wrap{ display:flex; justify-content:center; margin-bottom:18px; }
+  .row{ display:flex; justify-content:center; gap:8px; flex-wrap:wrap; margin-bottom:14px; }
+  button{
+    font-family:'Space Grotesk', sans-serif; font-size:0.9rem; font-weight:500;
+    padding:9px 16px; border-radius:7px; border:1px solid var(--wall);
+    background:var(--panel); color:var(--text); cursor:pointer;
+  }
+  button.active{ background:var(--player); color:var(--bg); border-color:var(--player); }
+  button:focus-visible{ outline:2px solid var(--player); outline-offset:2px; }
+  .hint{ color:var(--muted); font-size:0.82rem; margin-top:4px; }
+  .dpad{ display:grid; grid-template-columns:repeat(3,44px); grid-template-rows:repeat(2,44px);
+         gap:6px; justify-content:center; margin:18px auto 0; }
+  .dpad button{ padding:0; font-size:1.1rem; }
+  #dUp{ grid-column:2; grid-row:1; }
+  #dLeft{ grid-column:1; grid-row:2; }
+  #dDown{ grid-column:2; grid-row:2; }
+  #dRight{ grid-column:3; grid-row:2; }
+  @media (min-width:640px){ .dpad{ display:none; } }
+
+  #winOverlay{
+    position:fixed; inset:0; background:rgba(10,12,17,0.82); display:flex;
+    align-items:center; justify-content:center; padding:20px; z-index:10;
+  }
+  #winOverlay.hidden{ display:none; }
+  .winCard{
+    background:var(--panel); border:1px solid var(--wall); border-radius:14px;
+    padding:32px 28px; text-align:center; max-width:320px;
+    animation:pop 0.25s ease;
+  }
+  @keyframes pop{ from{ transform:scale(0.9); opacity:0; } to{ transform:scale(1); opacity:1; } }
+  .winCard h2{ margin:0 0 10px; font-size:1.3rem; }
+  .winCard p{ color:var(--muted); margin:0 0 20px; }
+  .winCard button{ background:var(--player); color:var(--bg); border-color:var(--player); font-weight:600; }
+</style>
+</head>
+<body>
+
+<div class="card">
+  <h1>Maze Runner</h1>
+  <p class="sub">Find your way to the glow.</p>
+
+  <div class="hud">
+    <div>Time: <span class="val" id="time">0.0s</span></div>
+    <div>Moves: <span class="val" id="moves">0</span></div>
+    <div>Best: <span class="val" id="best">--</span></div>
+  </div>
+
+  <div class="canvas-wrap"><canvas id="maze"></canvas></div>
+
+  <div class="row" id="difficulty">
+    <button data-size="10">Small</button>
+    <button data-size="16" class="active">Medium</button>
+    <button data-size="22">Large</button>
+  </div>
+  <div class="row"><button id="newMaze">New maze</button></div>
+  <p class="hint">Arrow keys or WASD to move.</p>
+
+  <div class="dpad">
+    <button id="dUp">▲</button>
+    <button id="dLeft">◀</button>
+    <button id="dDown">▼</button>
+    <button id="dRight">▶</button>
+  </div>
+</div>
+
+<div id="winOverlay" class="hidden">
+  <div class="winCard">
+    <h2>You escaped! 🎉</h2>
+    <p id="winStats"></p>
+    <button id="playAgain">Play again</button>
+  </div>
+</div>
+
+<script>
+const DIRS = { N:[-1,0], S:[1,0], E:[0,1], W:[0,-1] };
+const OPPOSITE = { N:'S', S:'N', E:'W', W:'E' };
+
+const canvas = document.getElementById('maze');
+const ctx = canvas.getContext('2d');
+
+let currentSize = 16;
+let maze, player, moves, started, won, startTime, cellSize;
+
+function generateMaze(size){
+  const cells = Array.from({length:size}, () =>
+    Array.from({length:size}, () => ({N:false,S:false,E:false,W:false})));
+  const visited = Array.from({length:size}, () => Array(size).fill(false));
+  const stack = [[0,0]];
+  visited[0][0] = true;
+  while(stack.length){
+    const [r,c] = stack[stack.length-1];
+    const dirs = Object.keys(DIRS);
+    for(let i=dirs.length-1;i>0;i--){
+      const j = Math.floor(Math.random()*(i+1));
+      [dirs[i],dirs[j]] = [dirs[j],dirs[i]];
+    }
+    let carved = false;
+    for(const d of dirs){
+      const [dr,dc] = DIRS[d];
+      const nr = r+dr, nc = c+dc;
+      if(nr>=0 && nr<size && nc>=0 && nc<size && !visited[nr][nc]){
+        cells[r][c][d] = true;
+        cells[nr][nc][OPPOSITE[d]] = true;
+        visited[nr][nc] = true;
+        stack.push([nr,nc]);
+        carved = true;
+        break;
+      }
+    }
+    if(!carved) stack.pop();
+  }
+  return cells;
+}
+
+function bestKey(size){ return 'mazeRunnerBest_' + size; }
+function getBest(size){
+  try{ const v = localStorage.getItem(bestKey(size)); return v ? parseFloat(v) : null; }
+  catch(e){ return null; }
+}
+function setBest(size, seconds){
+  try{ localStorage.setItem(bestKey(size), String(seconds)); }catch(e){}
+}
+function refreshBestDisplay(){
+  const b = getBest(currentSize);
+  document.getElementById('best').textContent = b ? b.toFixed(1) + 's' : '--';
+}
+
+function setupCanvas(size){
+  const displaySize = Math.min(520, window.innerWidth - 64);
+  cellSize = displaySize / size;
+  const dpr = window.devicePixelRatio || 1;
+  canvas.style.width = displaySize + 'px';
+  canvas.style.height = displaySize + 'px';
+  canvas.width = displaySize * dpr;
+  canvas.height = displaySize * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+function newGame(size){
+  currentSize = size;
+  maze = generateMaze(size);
+  player = { r:0, c:0 };
+  moves = 0;
+  started = false;
+  won = false;
+  document.getElementById('moves').textContent = '0';
+  document.getElementById('time').textContent = '0.0s';
+  document.getElementById('winOverlay').classList.add('hidden');
+  setupCanvas(size);
+  refreshBestDisplay();
+}
+
+function tryMove(dr, dc){
+  if(won) return;
+  const nr = player.r + dr, nc = player.c + dc;
+  if(nr < 0 || nr >= currentSize || nc < 0 || nc >= currentSize) return;
+  let dir;
+  if(dr === -1) dir = 'N';
+  else if(dr === 1) dir = 'S';
+  else if(dc === 1) dir = 'E';
+  else dir = 'W';
+  if(!maze[player.r][player.c][dir]) return;
+
+  player.r = nr; player.c = nc;
+  moves++;
+  document.getElementById('moves').textContent = moves;
+  if(!started){ started = true; startTime = performance.now(); }
+
+  if(nr === currentSize - 1 && nc === currentSize - 1){
+    won = true;
+    const elapsed = (performance.now() - startTime) / 1000;
+    const best = getBest(currentSize);
+    if(best === null || elapsed < best) setBest(currentSize, elapsed);
+    document.getElementById('winStats').textContent = elapsed.toFixed(1) + 's · ' + moves + ' moves';
+    refreshBestDisplay();
+    document.getElementById('winOverlay').classList.remove('hidden');
+  }
+}
+
+function hexToRgb(h){
+  h = h.replace('#','');
+  return [0,2,4].map(i => parseInt(h.substr(i,2),16));
+}
+
+function draw(){
+  const size = currentSize;
+  const cs = cellSize;
+  const w = canvas.width / (window.devicePixelRatio || 1);
+  const h = canvas.height / (window.devicePixelRatio || 1);
+
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--path').trim();
+  ctx.fillRect(0, 0, w, h);
+
+  ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--wall').trim();
+  ctx.lineWidth = 2.5;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  for(let r=0;r<size;r++){
+    for(let c=0;c<size;c++){
+      const x = c*cs, y = r*cs;
+      const cell = maze[r][c];
+      if(!cell.N){ ctx.moveTo(x,y); ctx.lineTo(x+cs,y); }
+      if(!cell.W){ ctx.moveTo(x,y); ctx.lineTo(x,y+cs); }
+      if(r===size-1 && !cell.S){ ctx.moveTo(x,y+cs); ctx.lineTo(x+cs,y+cs); }
+      if(c===size-1 && !cell.E){ ctx.moveTo(x+cs,y); ctx.lineTo(x+cs,y+cs); }
+    }
+  }
+  ctx.stroke();
+
+  const pulse = 0.5 + 0.5*Math.sin(performance.now()/300);
+
+  const goalX = (size-1)*cs + cs/2, goalY = (size-1)*cs + cs/2;
+  let grad = ctx.createRadialGradient(goalX,goalY,1,goalX,goalY,cs*0.9);
+  grad.addColorStop(0, 'rgba(242,184,75,0.55)');
+  grad.addColorStop(1, 'rgba(242,184,75,0)');
+  ctx.fillStyle = grad;
+  ctx.beginPath(); ctx.arc(goalX,goalY,cs*0.9*(0.75+0.25*pulse),0,Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#f2b84b';
+  ctx.beginPath(); ctx.arc(goalX,goalY,cs*0.18,0,Math.PI*2); ctx.fill();
+
+  const px = player.c*cs+cs/2, py = player.r*cs+cs/2;
+  let glow = ctx.createRadialGradient(px,py,1,px,py,cs*2.4);
+  glow.addColorStop(0, 'rgba(87,224,201,0.4)');
+  glow.addColorStop(1, 'rgba(87,224,201,0)');
+  ctx.fillStyle = glow;
+  ctx.beginPath(); ctx.arc(px,py,cs*2.4,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#57e0c9';
+  ctx.beginPath(); ctx.arc(px,py,cs*0.22,0,Math.PI*2); ctx.fill();
+
+  if(started && !won){
+    const elapsed = (performance.now() - startTime) / 1000;
+    document.getElementById('time').textContent = elapsed.toFixed(1) + 's';
+  }
+  requestAnimationFrame(draw);
+}
+
+window.addEventListener('keydown', (e) => {
+  const map = {
+    ArrowUp:[-1,0], ArrowDown:[1,0], ArrowLeft:[0,-1], ArrowRight:[0,1],
+    w:[-1,0], s:[1,0], a:[0,-1], d:[0,1], W:[-1,0], S:[1,0], A:[0,-1], D:[0,1]
+  };
+  const k = map[e.key];
+  if(k){ e.preventDefault(); tryMove(k[0], k[1]); }
+});
+
+document.getElementById('dUp').addEventListener('click', () => tryMove(-1,0));
+document.getElementById('dDown').addEventListener('click', () => tryMove(1,0));
+document.getElementById('dLeft').addEventListener('click', () => tryMove(0,-1));
+document.getElementById('dRight').addEventListener('click', () => tryMove(0,1));
+
+document.querySelectorAll('#difficulty button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('#difficulty button').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    newGame(parseInt(btn.dataset.size, 10));
+  });
+});
+document.getElementById('newMaze').addEventListener('click', () => newGame(currentSize));
+document.getElementById('playAgain').addEventListener('click', () => newGame(currentSize));
+window.addEventListener('resize', () => setupCanvas(currentSize));
+
+newGame(currentSize);
+draw();
+</script>
+
+</body>
+</html>
